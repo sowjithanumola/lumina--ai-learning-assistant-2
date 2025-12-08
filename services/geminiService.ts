@@ -1,14 +1,62 @@
-import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { Subject, ConceptGraphData } from "../types";
 import { SYSTEM_INSTRUCTIONS } from "../constants";
 
-const getApiKey = () => process.env.API_KEY || '';
+const getApiKey = () => {
+  // Prioritize environment variable (injected by Vite)
+  if (process.env.API_KEY) return process.env.API_KEY;
+  
+  // Fallback to local storage
+  if (typeof localStorage !== 'undefined') {
+    return localStorage.getItem('lumina_api_key') || '';
+  }
+  return '';
+};
 
 export class GeminiService {
-  private ai: GoogleGenAI;
+  private ai: GoogleGenAI | null = null;
+  private apiKey: string = '';
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const key = getApiKey();
+    if (key) {
+      this.apiKey = key;
+      this.ai = new GoogleGenAI({ apiKey: key });
+    }
+  }
+
+  hasKey(): boolean {
+    const key = getApiKey();
+    return !!key;
+  }
+
+  // Allow updating the API key at runtime
+  setApiKey(key: string) {
+    if (!key) return;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('lumina_api_key', key);
+    }
+    this.apiKey = key;
+    this.ai = new GoogleGenAI({ apiKey: key });
+  }
+
+  private getClient(): GoogleGenAI {
+    // Try to recover key from storage if instance is null
+    if (!this.ai) {
+      const key = getApiKey();
+      if (key) {
+        this.setApiKey(key);
+      } else {
+        throw new Error("API_KEY_MISSING");
+      }
+    }
+    
+    // Double check we have an instance now
+    if (!this.ai) {
+       throw new Error("API_KEY_MISSING");
+    }
+    
+    return this.ai;
   }
 
   // Helper to determine model based on subject
@@ -36,6 +84,7 @@ export class GeminiService {
     newMessage: string,
     imageData?: { data: string; mimeType: string }
   ) {
+    const client = this.getClient();
     const modelName = this.getModelName(subject);
     const systemInstruction = SYSTEM_INSTRUCTIONS[subject];
     
@@ -45,7 +94,7 @@ export class GeminiService {
       tools.push({ googleSearch: {} });
     }
 
-    const chat = this.ai.chats.create({
+    const chat = client.chats.create({
       model: modelName,
       history: history,
       config: {
@@ -79,12 +128,13 @@ export class GeminiService {
 
   // Generate Concept Map Data (JSON)
   async generateConceptMap(topic: string): Promise<ConceptGraphData> {
+    const client = this.getClient();
     const model = 'gemini-2.5-flash';
     const prompt = `Generate a concept map for the topic: "${topic}". 
     Return strictly JSON with two arrays: "nodes" (id, group 1-3 based on importance, val 5-20) and "links" (source id, target id, value 1-5). 
     Create about 10-15 nodes effectively linking related sub-concepts.`;
 
-    const response = await this.ai.models.generateContent({
+    const response = await client.models.generateContent({
       model,
       contents: prompt,
       config: {
@@ -126,7 +176,8 @@ export class GeminiService {
 
   // Generate Image using Imagen
   async generateImage(prompt: string): Promise<string> {
-    const response = await this.ai.models.generateImages({
+    const client = this.getClient();
+    const response = await client.models.generateImages({
       model: 'imagen-4.0-generate-001',
       prompt: prompt,
       config: {

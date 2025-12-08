@@ -52,10 +52,17 @@ const App: React.FC = () => {
     try {
       const savedUser = localStorage.getItem('lumina_user');
       const savedSessions = localStorage.getItem('lumina_sessions');
+      
+      const hasApiKey = geminiService.hasKey();
+
       if (savedUser) {
         setCurrentUser(JSON.parse(savedUser));
-        setShowLogin(false);
+        // Force login/unlock if no key is present, even if user data is there
+        setShowLogin(!hasApiKey);
+      } else {
+        setShowLogin(true);
       }
+
       if (savedSessions) {
         const parsed = JSON.parse(savedSessions);
         // Merge with default to ensure all keys exist
@@ -76,10 +83,15 @@ const App: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleLogin = (user: UserProfile) => {
+  const handleLogin = (user: UserProfile, apiKey?: string) => {
     try {
       setCurrentUser(user);
       localStorage.setItem('lumina_user', JSON.stringify(user));
+      
+      if (apiKey) {
+        geminiService.setApiKey(apiKey);
+      }
+
       setShowLogin(false);
       setShowProfileEdit(false);
     } catch (e) {
@@ -135,6 +147,14 @@ const App: React.FC = () => {
     localStorage.setItem('lumina_sessions', JSON.stringify(newSessionCounts));
   };
 
+  const handleApiKeyError = (error: any) => {
+    console.error("API Key Error:", error);
+    if (error.message === "API_KEY_MISSING" || error.message?.includes("API key")) {
+      alert("Please enter a valid API Key to continue.");
+      setShowLogin(true);
+    }
+  };
+
   const handleGenerateImage = async () => {
     if (!inputText.trim()) {
       alert("Please describe the image you want to generate.");
@@ -168,14 +188,18 @@ const App: React.FC = () => {
         }]
       };
       setMessages(prev => [...prev, botMsg]);
-    } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        sender: Sender.Bot,
-        text: "Sorry, I couldn't generate that image. Please try a different description.",
-        timestamp: new Date()
-      }]);
+    } catch (error: any) {
+      if (error.message === "API_KEY_MISSING") {
+        handleApiKeyError(error);
+      } else {
+        console.error(error);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          sender: Sender.Bot,
+          text: "Sorry, I couldn't generate that image. Please try a different description.",
+          timestamp: new Date()
+        }]);
+      }
     } finally {
       setIsGeneratingImage(false);
     }
@@ -206,6 +230,7 @@ const App: React.FC = () => {
     }));
 
     try {
+      // This will throw if key is missing
       const stream = geminiService.streamChat(activeSubject, apiHistory as any, userMsg.text, imageToSend || undefined);
       
       const botMsgId = (Date.now() + 1).toString();
@@ -250,14 +275,19 @@ const App: React.FC = () => {
          }).catch(() => {});
       }
 
-    } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        sender: Sender.Bot,
-        text: "I'm sorry, I encountered an error. Please try again.",
-        timestamp: new Date()
-      }]);
+    } catch (error: any) {
+      if (error.message === "API_KEY_MISSING") {
+        handleApiKeyError(error);
+        // Remove the loading message if it was added
+        setMessages(prev => prev.filter(m => !m.isStreaming));
+      } else {
+        console.error(error);
+        setMessages(prev => prev.map(m => 
+          m.isStreaming 
+            ? { ...m, isStreaming: false, text: "I'm sorry, I encountered an error. Please check your connection or API key." } 
+            : m
+        ));
+      }
     } finally {
       setIsTyping(false);
     }
@@ -279,8 +309,8 @@ const App: React.FC = () => {
 
   const totalSessions: number = (Object.values(sessionCounts) as number[]).reduce((a, b) => Number(a) + Number(b), 0);
 
-  if (showLogin && !currentUser) {
-    return <LoginScreen onLogin={handleLogin} />;
+  if (showLogin) {
+    return <LoginScreen onLogin={handleLogin} initialUser={currentUser} />;
   }
 
   return (
